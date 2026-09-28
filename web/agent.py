@@ -1,6 +1,6 @@
 from collections.abc import AsyncIterator
 
-from agents import Agent, Runner
+from agents import Agent, ModelSettings, Runner
 from openai.types.responses import ResponseTextDeltaEvent
 
 import config
@@ -25,13 +25,20 @@ def build_instructions(context: str) -> str:
     return BASE_INSTRUCTIONS + "\n" + CONTEXT_INSTRUCTIONS.format(context=context)
 
 
-def build_agent(context: str) -> Agent:
-    return Agent(name="Live Q&A", instructions=build_instructions(context), model=config.ANSWER_MODEL)
+def build_agent(context: str, model_settings: ModelSettings | None = None) -> Agent:
+    return Agent(
+        name="Live Q&A",
+        instructions=build_instructions(context),
+        model=config.ANSWER_MODEL,
+        model_settings=model_settings or ModelSettings(),
+    )
 
 
-async def stream_answer(question: str, context: str = "") -> AsyncIterator[str]:
+async def stream_answer(
+    question: str, context: str = "", model_settings: ModelSettings | None = None
+) -> AsyncIterator[str]:
     """Yield answer text deltas for a question, grounded in the given context."""
-    result = Runner.run_streamed(build_agent(context), input=question)
+    result = Runner.run_streamed(build_agent(context, model_settings), input=question)
     async for event in result.stream_events():
         if event.type == "raw_response_event" and isinstance(event.data, ResponseTextDeltaEvent):
             yield event.data.delta

@@ -10,28 +10,43 @@ PartialHandler = Callable[[str, str], Awaitable[None]]  # (utterance_id, text so
 FinalHandler = Callable[[str, str], Awaitable[None]]  # (utterance_id, final text)
 ErrorHandler = Callable[[str], Awaitable[None]]
 
-SESSION_CONFIG = {
-    "type": "transcription",
-    "audio": {
-        "input": {
-            "format": {"type": "audio/pcm", "rate": 24000},
-            "transcription": {"model": config.TRANSCRIBE_MODEL},
-            "turn_detection": {
-                "type": "server_vad",
-                "threshold": 0.5,
-                "prefix_padding_ms": 300,
-                "silence_duration_ms": 500,
-            },
-            "noise_reduction": {"type": "near_field"},
-        }
-    },
+DEFAULT_TURN_DETECTION = {
+    "type": "server_vad",
+    "threshold": 0.5,
+    "prefix_padding_ms": 300,
+    "silence_duration_ms": config.VAD_SILENCE_MS,
 }
+
+
+def session_config(model: str, turn_detection: dict, transcription_extra: dict | None = None) -> dict:
+    return {
+        "type": "transcription",
+        "audio": {
+            "input": {
+                "format": {"type": "audio/pcm", "rate": 24000},
+                "transcription": {"model": model, **(transcription_extra or {})},
+                "turn_detection": turn_detection,
+                "noise_reduction": {"type": "near_field"},
+            }
+        },
+    }
 
 
 class RealtimeTranscriber:
     """Bridges PCM16 audio (24 kHz mono) to an OpenAI Realtime transcription session."""
 
-    def __init__(self, on_partial: PartialHandler, on_final: FinalHandler, on_error: ErrorHandler):
+    def __init__(
+        self,
+        on_partial: PartialHandler,
+        on_final: FinalHandler,
+        on_error: ErrorHandler,
+        model: str | None = None,
+        turn_detection: dict | None = None,
+        transcription_extra: dict | None = None,
+    ):
+        self._session = session_config(
+            model or config.TRANSCRIBE_MODEL, turn_detection or DEFAULT_TURN_DETECTION, transcription_extra
+        )
         self._on_partial = on_partial
         self._on_final = on_final
         self._on_error = on_error
@@ -42,7 +57,7 @@ class RealtimeTranscriber:
     async def start(self) -> None:
         manager = AsyncOpenAI().realtime.connect(extra_query={"intent": "transcription"})
         self._connection = await manager.enter()
-        await self._connection.session.update(session=SESSION_CONFIG)
+        await self._connection.session.update(session=self._session)
         self._reader = asyncio.create_task(self._read_events())
 
     async def send_audio(self, pcm16: bytes) -> None:
