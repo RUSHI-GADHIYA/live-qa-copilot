@@ -2,21 +2,62 @@ import asyncio
 import itertools
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from agent import stream_answer
+from context_store import ContextStore, UnsupportedFileError, extract_text
 
 STATIC_DIR = Path(__file__).parent / "static"
 
 app = FastAPI(title="Live Q&A Agent")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
+context = ContextStore()
+
 
 @app.get("/")
 async def index():
     return FileResponse(STATIC_DIR / "index.html")
+
+
+class ContextText(BaseModel):
+    text: str
+
+
+@app.post("/context/text")
+async def set_context_text(body: ContextText):
+    context.set(body.text, "pasted text")
+    return context.summary()
+
+
+@app.post("/context/file")
+async def set_context_file(file: UploadFile):
+    data = await file.read()
+    try:
+        text = await run_in_threadpool(extract_text, file.filename or "", data)
+    except UnsupportedFileError as exc:
+        raise HTTPException(status_code=415, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not read {file.filename}: {exc}")
+    if not text.strip():
+        raise HTTPException(status_code=400, detail=f"No text found in {file.filename}")
+    context.set(text, file.filename or "uploaded file")
+    return context.summary()
+
+
+@app.get("/context")
+async def get_context():
+    return context.summary()
+
+
+@app.delete("/context")
+async def clear_context():
+    context.clear()
+    return context.summary()
 
 
 class Session:
@@ -42,7 +83,7 @@ class Session:
 
     async def _answer(self, question_id: int, question: str):
         try:
-            async for delta in stream_answer(question):
+            async for delta in stream_answer(question, context.text):
                 await self.send("answer_delta", question_id=question_id, delta=delta)
             await self.send("answer_done", question_id=question_id)
         except asyncio.CancelledError:

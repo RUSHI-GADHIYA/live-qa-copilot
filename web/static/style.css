@@ -108,3 +108,24 @@ h2 { margin: 0; font-size: 13px; text-transform: uppercase; letter-spacing: .06e
   background: var(--panel);
   color: var(--text);
 }
+
+.context-panel textarea {
+  flex: 1;
+  min-height: 160px;
+  resize: vertical;
+  font: 13px/1.45 ui-monospace, Consolas, monospace;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+}
+.row { display: flex; gap: 8px; flex-wrap: wrap; }
+.file-btn {
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.small { font-size: 13px; }
+.warn { color: var(--warn); }

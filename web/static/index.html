@@ -19,7 +19,17 @@
 </section>
 
 <main class="layout">
-  <aside class="context-panel" id="contextPanel"></aside>
+  <aside class="context-panel">
+    <h2>Context</h2>
+    <textarea id="contextText" placeholder="Paste reference text the agent should use…"></textarea>
+    <div class="row">
+      <label class="file-btn">Upload file<input id="contextFile" type="file" accept=".txt,.md,.pdf,.docx" hidden></label>
+      <button id="saveContextBtn">Save</button>
+      <button id="clearContextBtn">Clear</button>
+    </div>
+    <div id="contextInfo" class="muted small">No context loaded.</div>
+    <div id="contextWarn" class="warn small" hidden></div>
+  </aside>
 
   <section class="feed-panel">
     <h2>Answer feed</h2>

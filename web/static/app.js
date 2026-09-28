@@ -75,3 +75,48 @@ $("askForm").addEventListener("submit", (e) => {
 $("clearFeedBtn").addEventListener("click", () => { feed.innerHTML = ""; cards.clear(); });
 
 connect();
+
+// ---- Context panel ----
+async function contextRequest(method, path, body) {
+  const res = await fetch(path, { method, body, headers: typeof body === "string" ? { "Content-Type": "application/json" } : {} });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.detail || res.statusText);
+  return data;
+}
+
+function renderContext(info) {
+  $("contextInfo").textContent = info.length
+    ? `${info.length.toLocaleString()} chars from ${info.source}`
+    : "No context loaded.";
+  const warn = $("contextWarn");
+  warn.hidden = !info.truncated;
+  warn.textContent = info.truncated
+    ? `Context was ${info.original_length.toLocaleString()} chars; truncated to ${info.max_length.toLocaleString()}.`
+    : "";
+}
+
+async function withContext(action) {
+  try { renderContext(await action()); }
+  catch (err) { $("contextWarn").hidden = false; $("contextWarn").textContent = err.message; }
+}
+
+$("saveContextBtn").addEventListener("click", () =>
+  withContext(() => contextRequest("POST", "/context/text", JSON.stringify({ text: $("contextText").value }))));
+
+$("clearContextBtn").addEventListener("click", () =>
+  withContext(async () => { $("contextText").value = ""; return contextRequest("DELETE", "/context"); }));
+
+$("contextFile").addEventListener("change", (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const form = new FormData();
+  form.append("file", file);
+  withContext(async () => {
+    const info = await contextRequest("POST", "/context/file", form);
+    $("contextText").value = info.preview + (info.length > info.preview.length ? "\n…" : "");
+    return info;
+  });
+  e.target.value = "";
+});
+
+withContext(() => contextRequest("GET", "/context"));
