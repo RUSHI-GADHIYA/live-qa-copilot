@@ -95,6 +95,11 @@ export class OpenAIClient {
   async warm(model: string): Promise<void> {
     await this.request(`/models/${model}`).catch(() => undefined);
   }
+
+  /** Throws with the API's message if the key cannot use this model. Free: no tokens. */
+  async checkAccess(model: string): Promise<void> {
+    await this.request(`/models/${model}`);
+  }
 }
 
 export function outputText(response: { output?: { type: string; content?: { type: string; text?: string }[] }[] }): string {

@@ -1,11 +1,11 @@
 {
   "expo": {
-    "name": "live_copilot_mobile",
-    "slug": "live_copilot_mobile",
+    "name": "Live Copilot",
+    "slug": "live-copilot-mobile",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "livecopilotmobile",
+    "scheme": "livecopilot",
     "userInterfaceStyle": "automatic",
     "ios": {
       "icon": "./assets/expo.icon"
@@ -17,11 +17,15 @@
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
-      "predictiveBackGestureEnabled": false
-    },
-    "web": {
-      "output": "static",
-      "favicon": "./assets/images/favicon.png"
+      "predictiveBackGestureEnabled": false,
+      "package": "com.livecopilot.mobile",
+      "softwareKeyboardLayoutMode": "resize",
+      "blockedPermissions": [
+        "android.permission.SYSTEM_ALERT_WINDOW",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.VIBRATE"
+      ]
     },
     "plugins": [
       "expo-router",
@@ -34,7 +38,18 @@
         }
       ],
       "expo-secure-store",
-      "@siteed/audio-studio"
+      [
+        "@siteed/audio-studio",
+        {
+          "enablePhoneStateHandling": false,
+          "enableDeviceDetection": false,
+          "enableNotifications": true,
+          "enableBackgroundAudio": true,
+          "iosConfig": {
+            "microphoneUsageDescription": "Live Copilot listens to the conversation to detect questions."
+          }
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,
