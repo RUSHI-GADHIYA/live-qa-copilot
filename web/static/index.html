@@ -1,13 +1,36 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><title>Live Q&A Agent</title></head>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live Q&A Agent</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
 <body>
-<h1>Live Q&A Agent</h1>
-<pre id="log"></pre>
-<script>
-const ws = new WebSocket(`ws://${location.host}/ws`);
-ws.onopen = () => ws.send(JSON.stringify({type: "ping"}));
-ws.onmessage = (e) => { document.getElementById("log").textContent += e.data + "\n"; };
-</script>
+<header class="toolbar">
+  <button id="listenBtn" class="primary" disabled>● Start listening</button>
+  <button id="clearFeedBtn">Clear feed</button>
+  <span id="status" class="status">connecting…</span>
+</header>
+
+<section class="transcript">
+  <span class="label">Live transcript:</span>
+  <span id="transcript" class="muted">(not listening)</span>
+</section>
+
+<main class="layout">
+  <aside class="context-panel" id="contextPanel"></aside>
+
+  <section class="feed-panel">
+    <h2>Answer feed</h2>
+    <div id="feed" class="feed"></div>
+    <form id="askForm" class="ask-form">
+      <input id="askInput" type="text" placeholder="Type a question (debug)…" autocomplete="off">
+      <button type="submit">Ask</button>
+    </form>
+  </section>
+</main>
+
+<script src="/static/app.js"></script>
 </body>
 </html>
