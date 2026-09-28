@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+openai
+openai-agents
+pypdf
+python-docx
+python-multipart
+python-dotenv

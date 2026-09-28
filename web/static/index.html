@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Live Q&A Agent</title></head>
+<body>
+<h1>Live Q&A Agent</h1>
+<pre id="log"></pre>
+<script>
+const ws = new WebSocket(`ws://${location.host}/ws`);
+ws.onopen = () => ws.send(JSON.stringify({type: "ping"}));
+ws.onmessage = (e) => { document.getElementById("log").textContent += e.data + "\n"; };
+</script>
+</body>
+</html>
