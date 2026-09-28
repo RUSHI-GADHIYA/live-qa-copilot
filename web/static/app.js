@@ -120,7 +120,8 @@ function showError(ev) {
   if (card) {
     card.classList.remove("thinking", "streaming");
     card.classList.add("error");
-    card.querySelector(".a").textContent += `\n[error] ${ev.message}`;
+    const a = card.querySelector(".a");
+    a.textContent += `${a.textContent ? "\n" : ""}[error] ${ev.message}`;
   } else {
     setStatus(`error: ${ev.message}`);
   }
