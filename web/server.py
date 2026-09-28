@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+import config
 from agent import stream_answer
 from context_store import ContextStore, UnsupportedFileError, extract_text
 from detector import classify
@@ -20,6 +21,8 @@ app = FastAPI(title="Live Q&A Agent")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 context = ContextStore()
+# Caps simultaneous answer streams (rate-limit protection); extra questions wait their turn.
+answer_slots = asyncio.Semaphore(config.MAX_CONCURRENT_ANSWERS)
 
 
 @app.get("/")
@@ -109,7 +112,11 @@ class Session:
 
     async def send(self, event_type: str, **payload):
         async with self._send_lock:
-            await self.ws.send_json({"type": event_type, **payload})
+            try:
+                await self.ws.send_json({"type": event_type, **payload})
+            except (WebSocketDisconnect, RuntimeError):
+                pass  # Client went away; the session is being torn down.
+
 
     def submit_utterance(self, text: str):
         """Classify a finished utterance in the background and answer it if it is a question.
@@ -146,8 +153,9 @@ class Session:
 
     async def _answer(self, question_id: int, question: str):
         try:
-            async for delta in stream_answer(question, context.text):
-                await self.send("answer_delta", question_id=question_id, delta=delta)
+            async with answer_slots:
+                async for delta in stream_answer(question, context.text):
+                    await self.send("answer_delta", question_id=question_id, delta=delta)
             await self.send("answer_done", question_id=question_id)
         except asyncio.CancelledError:
             raise
