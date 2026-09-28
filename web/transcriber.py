@@ -21,7 +21,13 @@ DEFAULT_TURN_DETECTION = {
 }
 
 
-def session_config(model: str, turn_detection: dict, transcription_extra: dict | None = None) -> dict:
+# Clean digital call audio needs no noise reduction; a laptop mic in a room hears speakers from a distance.
+NOISE_REDUCTION = {"call": None, "room": {"type": "far_field"}}
+
+
+def session_config(
+    model: str, turn_detection: dict, transcription_extra: dict | None = None, source: str = "room"
+) -> dict:
     return {
         "type": "transcription",
         "audio": {
@@ -29,7 +35,7 @@ def session_config(model: str, turn_detection: dict, transcription_extra: dict |
                 "format": {"type": "audio/pcm", "rate": 24000},
                 "transcription": {"model": model, **(transcription_extra or {})},
                 "turn_detection": turn_detection,
-                "noise_reduction": {"type": "near_field"},
+                "noise_reduction": NOISE_REDUCTION.get(source, NOISE_REDUCTION["room"]),
             }
         },
     }
@@ -46,9 +52,10 @@ class RealtimeTranscriber:
         model: str | None = None,
         turn_detection: dict | None = None,
         transcription_extra: dict | None = None,
+        source: str = "room",
     ):
         self._session = session_config(
-            model or config.TRANSCRIBE_MODEL, turn_detection or DEFAULT_TURN_DETECTION, transcription_extra
+            model or config.TRANSCRIBE_MODEL, turn_detection or DEFAULT_TURN_DETECTION, transcription_extra, source
         )
         self._on_partial = on_partial
         self._on_final = on_final

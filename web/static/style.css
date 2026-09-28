@@ -52,6 +52,14 @@ button.primary.live { background: var(--danger); border-color: var(--danger); }
   border-bottom: 1px solid var(--border);
   background: var(--panel);
 }
+select {
+  font: inherit;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+}
 .status { margin-left: auto; color: var(--muted); font-size: 13px; }
 
 .transcript {

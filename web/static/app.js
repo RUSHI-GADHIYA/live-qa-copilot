@@ -62,24 +62,50 @@ function showIgnored(ev) {
 }
 
 // ---- Microphone ----
-async function startMic() {
-  $("listenBtn").disabled = true;
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({
+// Room: one mic hears everyone. Call: capture only the call's audio (a shared tab or the system sound),
+// so your own voice never reaches the app.
+async function captureAudio(source) {
+  if (source === "room") {
+    return navigator.mediaDevices.getUserMedia({
       audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
     });
+  }
+  const stream = await navigator.mediaDevices.getDisplayMedia({
+    video: true, // Chrome only offers audio sharing together with video
+    audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+    systemAudio: "include",
+    selfBrowserSurface: "exclude",
+  });
+  stream.getVideoTracks().forEach((t) => t.stop());
+  if (!stream.getAudioTracks().length) {
+    throw new Error('no audio shared. Pick the call tab with "Share tab audio" on, or the entire screen with "Share system audio".');
+  }
+  return stream;
+}
+
+async function startMic() {
+  $("listenBtn").disabled = true;
+  const source = $("sourceSelect").value;
+  try {
+    const stream = await captureAudio(source);
     // Ask for 24 kHz directly; the worklet resamples if the browser picks another rate.
     const ctx = new AudioContext({ sampleRate: 24000 });
     await ctx.audioWorklet.addModule("/static/pcm-worklet.js");
     const node = new AudioWorkletNode(ctx, "pcm-worklet");
-    node.port.onmessage = (e) => { if (ws.readyState === WebSocket.OPEN) ws.send(e.data); };
+    const gate = new SilenceGate();
+    node.port.onmessage = (e) => {
+      if (ws.readyState !== WebSocket.OPEN) return;
+      for (const chunk of $("gateToggle").checked ? gate.push(e.data) : [e.data]) ws.send(chunk);
+    };
     ctx.createMediaStreamSource(stream).connect(node);
+    // "Stop sharing" in the browser bar, or an unplugged mic, ends listening too.
+    stream.getAudioTracks()[0].addEventListener("ended", () => { if (mic) $("listenBtn").click(); });
     mic = { stream, ctx, node };
-    send({ type: "start" });
-    showTranscript("listening…", true, false);
+    send({ type: "start", source });
+    showTranscript(source === "call" ? "listening to the call…" : "listening…", true, false);
   } catch (err) {
     stopMic();
-    setStatus(`mic error: ${err.message}`);
+    setStatus(`${source === "call" ? "call audio" : "mic"} error: ${err.message}`);
     setListeningUi(false);
   }
 }
@@ -97,8 +123,18 @@ function setListeningUi(active) {
   btn.disabled = !ws || ws.readyState !== WebSocket.OPEN;
   btn.classList.toggle("live", active);
   btn.textContent = active ? "■ Stop listening" : "● Start listening";
+  $("sourceSelect").disabled = active;
   if (!active) showTranscript("(not listening)", true, false);
 }
+
+// Remember the audio source between visits (a per-browser convenience; storage may be unavailable).
+try {
+  const saved = localStorage.getItem("source");
+  if (saved) $("sourceSelect").value = saved;
+} catch {}
+$("sourceSelect").addEventListener("change", () => {
+  try { localStorage.setItem("source", $("sourceSelect").value); } catch {}
+});
 
 $("listenBtn").addEventListener("click", () => {
   if (mic) {

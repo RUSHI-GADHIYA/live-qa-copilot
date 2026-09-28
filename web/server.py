@@ -87,13 +87,14 @@ class Session:
         self._utterance_tail: asyncio.Future = asyncio.get_running_loop().create_future()
         self._utterance_tail.set_result(None)
 
-    async def start_listening(self):
+    async def start_listening(self, source: str = "room"):
         if self._transcriber is not None:
             return
         transcriber = RealtimeTranscriber(
             on_partial=lambda _id, text: self.send("transcript_partial", text=text),
             on_final=self._on_final_transcript,
             on_error=lambda message: self.send("error", message=message),
+            source=source,
         )
         try:
             await transcriber.start()
@@ -269,7 +270,7 @@ async def ws_endpoint(ws: WebSocket):
                 continue
             kind, text = msg.get("type"), msg.get("text", "").strip()
             if kind == "start":
-                await session.start_listening()
+                await session.start_listening(msg.get("source", "room"))
             elif kind == "stop":
                 await session.stop_listening()
             elif kind == "ask" and text:

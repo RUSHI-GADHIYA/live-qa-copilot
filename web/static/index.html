@@ -9,6 +9,13 @@
 <body>
 <header class="toolbar">
   <button id="listenBtn" class="primary" disabled>● Start listening</button>
+  <select id="sourceSelect" title="Where the questions come from">
+    <option value="call">Call audio (share tab / screen)</option>
+    <option value="room">Room mic</option>
+  </select>
+  <label class="small muted" title="Only send audio while someone is speaking (lower cost)">
+    <input id="gateToggle" type="checkbox" checked> skip silence
+  </label>
   <button id="clearFeedBtn">Clear feed</button>
   <span id="status" class="status">connecting…</span>
 </header>
@@ -43,6 +50,7 @@
   </section>
 </main>
 
+<script src="/static/gate.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>
