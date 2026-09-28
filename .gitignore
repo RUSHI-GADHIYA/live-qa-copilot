@@ -1,0 +1,12 @@
+# Safety net for the whole repo; each app also has its own .gitignore.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.jks
+*.keystore
+
+# Personal context documents kept next to the apps
+/*.docx
+/*.pdf
