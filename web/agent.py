@@ -43,10 +43,15 @@ def build_agent(context: str, model_settings: ModelSettings | None = None) -> Ag
 
 
 async def stream_answer(
-    question: str, context: str = "", model_settings: ModelSettings | None = None
+    question: str,
+    context: str = "",
+    history: list[dict] | None = None,
+    model_settings: ModelSettings | None = None,
 ) -> AsyncIterator[str]:
-    """Yield answer text deltas for a question, grounded in the given context."""
-    result = Runner.run_streamed(build_agent(context, model_settings), input=question)
+    """Yield answer text deltas for a question, grounded in the context and earlier exchanges."""
+    # Instructions + context form a stable prefix, so OpenAI's prompt caching applies across questions.
+    question_input = [*history, {"role": "user", "content": question}] if history else question
+    result = Runner.run_streamed(build_agent(context, model_settings), input=question_input)
     async for event in result.stream_events():
         if event.type == "raw_response_event" and isinstance(event.data, ResponseTextDeltaEvent):
             yield event.data.delta

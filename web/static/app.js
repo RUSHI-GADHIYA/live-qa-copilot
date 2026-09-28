@@ -28,6 +28,7 @@ function handleEvent(ev) {
   switch (ev.type) {
     case "transcript_partial": showTranscript(ev.text, true); break;
     case "transcript_final": showTranscript(ev.text, false); break;
+    case "utterance_ignored": showIgnored(ev); break;
     case "listening": if (!ev.active) stopMic(); setListeningUi(ev.active); break;
     case "question_detected": addCard(ev.question_id, ev.text); break;
     case "answer_delta": appendDelta(ev.question_id, ev.delta); break;
@@ -40,6 +41,24 @@ function showTranscript(text, partial, quoted = true) {
   const el = $("transcript");
   el.textContent = quoted ? `"${text}"` : text;
   el.classList.toggle("muted", partial);
+  $("transcriptTag").hidden = true;
+}
+
+// Utterances that did not become a card, e.g. you reading an answer aloud.
+function showIgnored(ev) {
+  const el = $("transcript");
+  el.textContent = `"${ev.text}"`;
+  el.classList.add("muted");
+  const tag = $("transcriptTag");
+  tag.textContent = `ignored: ${ev.reason}`;
+  tag.hidden = false;
+  if (ev.reason === "repeat" && cards.has(ev.question_id)) {
+    const card = cards.get(ev.question_id);
+    card.classList.remove("pulse");
+    void card.offsetWidth; // restart the animation
+    card.classList.add("pulse");
+    card.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
 }
 
 // ---- Microphone ----

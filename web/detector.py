@@ -1,38 +1,41 @@
-from pydantic import BaseModel
+from typing import Literal
 
 import config
 from openai_client import get_client, reasoning_settings
 
-MIN_WORDS = 3
+Label = Literal["question", "repeat", "other"]
 
-INSTRUCTIONS = """You classify utterances overheard in a live conversation.
-Decide whether the utterance is a genuine question (or request for information) that an assistant should answer.
-Treat implicit questions as questions too, e.g. "I wonder how X works" or "tell me about Y".
-Not questions: statements, greetings, filler, rhetorical or social questions ("how are you?", "right?", "you know?"),
-and fragments too incomplete to answer.
-If it is a question, return cleaned_question: the question rewritten clearly, with filler words and transcription
-noise removed and the meaning unchanged. Otherwise return an empty cleaned_question."""
+MIN_WORDS = 2
+
+INSTRUCTIONS = """You label utterances overheard in a live conversation between an ASKER, who asks questions, and a LISTENER, who answers them, often by reading or paraphrasing the assistant's suggested answer aloud. Both may be picked up by the same microphone.
+
+Label the LATEST utterance with exactly one letter:
+Q - a new question or request for information from the asker that the assistant should answer. Includes implicit requests ("tell me about X", "I wonder how Y works") and follow-ups ("what about the second one?").
+R - a repeat or rephrasing of a question already asked ("sorry, what was that?", "can you repeat the refund window?").
+N - anything else: the listener answering or reading an answer (even if it contains rhetorical questions like "so why does that matter? because..."), statements, small talk, greetings, filler, social questions ("how are you?", "right?"), or fragments.
+
+Reply with the single letter only."""
+
+_LABELS: dict[str, Label] = {"Q": "question", "R": "repeat", "N": "other"}
 
 
-class Classification(BaseModel):
-    is_question: bool
-    cleaned_question: str
+def build_input(utterance: str, history: list[tuple[str, str]]) -> str:
+    lines = ["Recent conversation:", *(f"{who}: {text}" for who, text in history), ""] if history else []
+    lines.append(f"LATEST utterance: {utterance}")
+    return "\n".join(lines)
 
 
-async def classify(text: str) -> tuple[bool, str]:
-    """Return (is_question, cleaned_question) for a finished utterance."""
+async def classify(text: str, history: list[tuple[str, str]] | None = None) -> Label:
+    """Label a finished utterance. A one-letter reply keeps this call close to the API's minimum latency."""
     text = text.strip()
     if len(text.split()) < MIN_WORDS:
-        return False, ""
+        return "other"
     reasoning = reasoning_settings(config.DETECTOR_MODEL)
-    response = await get_client().responses.parse(
+    response = await get_client().responses.create(
         model=config.DETECTOR_MODEL,
         instructions=INSTRUCTIONS,
-        input=text,
-        text_format=Classification,
+        input=build_input(text, history or []),
+        max_output_tokens=16,
         **({"reasoning": reasoning} if reasoning else {}),
     )
-    result = response.output_parsed
-    if result is None or not result.is_question:
-        return False, ""
-    return True, result.cleaned_question.strip() or text
+    return _LABELS.get(response.output_text.strip()[:1].upper(), "other")

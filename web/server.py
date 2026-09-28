@@ -15,7 +15,9 @@ import config
 from agent import stream_answer
 from context_store import ContextStore, UnsupportedFileError, extract_text
 from detector import classify
+from openai_client import warm_connections
 from transcriber import RealtimeTranscriber
+from turns import Conversation
 
 STATIC_DIR = Path(__file__).parent / "static"
 log = logging.getLogger("live_qa")
@@ -79,6 +81,8 @@ class Session:
         self._question_ids = itertools.count(1)
         self._tasks: set[asyncio.Task] = set()
         self._transcriber: RealtimeTranscriber | None = None
+        self.conversation = Conversation()
+        self._keep_warm: asyncio.Task | None = None
         # Resolved when the previous utterance has been classified (and its card created, if any).
         self._utterance_tail: asyncio.Future = asyncio.get_running_loop().create_future()
         self._utterance_tail.set_result(None)
@@ -98,10 +102,19 @@ class Session:
             await self.send("listening", active=False)
             return
         self._transcriber = transcriber
+        self._keep_warm = self.spawn(self._keep_connections_warm())
         await self.send("listening", active=True)
+
+    async def _keep_connections_warm(self):
+        while True:
+            await warm_connections()
+            await asyncio.sleep(45)
 
     async def stop_listening(self):
         transcriber, self._transcriber = self._transcriber, None
+        if self._keep_warm is not None:
+            self._keep_warm.cancel()
+            self._keep_warm = None
         await self.send("listening", active=False)
         if transcriber is not None:
             await transcriber.close()  # the close handshake can take a couple of seconds
@@ -131,21 +144,32 @@ class Session:
         self.spawn(self._handle_utterance(text, previous, self._utterance_tail))
 
     async def _handle_utterance(self, text: str, previous: asyncio.Future, done: asyncio.Future):
-        # Speculatively start the answer so it overlaps the detector call; it stays hidden until confirmed.
-        answer = AnswerStream(self, text) if config.SPECULATIVE_ANSWERS else None
-        started = time.perf_counter()
+        answer = None
         try:
+            # The listener reading a suggested answer aloud is never a new question; no API call needed.
+            if self.conversation.is_readback(text):
+                await self.send("utterance_ignored", text=text, reason="reading answer")
+                return
+            # Speculatively start the answer so it overlaps the detector call; it stays hidden until confirmed.
+            if config.SPECULATIVE_ANSWERS:
+                answer = AnswerStream(self, text)
+            started = time.perf_counter()
             try:
-                is_question, cleaned = await classify(text)
-                log.info("detector %.0f ms: %s %r", (time.perf_counter() - started) * 1000,
-                         "question" if is_question else "skip", text)
+                label = await classify(text, self.conversation.detector_history())
+                log.info("detector %.0f ms: %s %r", (time.perf_counter() - started) * 1000, label, text)
             except Exception as exc:
-                is_question, cleaned = False, ""
+                label = "other"
                 await self.send("error", message=f"Question detector failed: {exc}")
             await asyncio.shield(previous)
-            if is_question:
-                await self.ask(cleaned, answer)
+            if label == "question":
+                await self.ask(text, answer)
                 answer = None
+            elif label == "repeat":
+                await self.send("utterance_ignored", text=text, reason="repeat",
+                                question_id=self.conversation.last_question_id)
+            else:
+                self.conversation.add_other(text)
+                await self.send("utterance_ignored", text=text, reason="not a question")
         finally:
             if answer is not None:
                 answer.cancel()
@@ -155,6 +179,7 @@ class Session:
     async def ask(self, question: str, answer: "AnswerStream | None" = None):
         # The card is created before any answer text is shown, so feed order matches ask order.
         question_id = next(self._question_ids)
+        self.conversation.add_question(question_id, question)
         await self.send("question_detected", question_id=question_id, text=question)
         answer = answer or AnswerStream(self, question)
         await answer.attach(question_id)
@@ -181,6 +206,8 @@ class AnswerStream:
         self.session = session
         self.question = question
         self.question_id: int | None = None
+        # Earlier exchanges, captured now: a speculative answer starts before its own question is recorded.
+        self._history = session.conversation.answer_history(before_question_id=float("inf"))
         self._buffer: list[str] = []
         self._lock = asyncio.Lock()  # keeps the buffered flush ahead of live deltas
         self._attached = asyncio.Event()
@@ -199,13 +226,14 @@ class AnswerStream:
         self._task.cancel()
 
     async def _send_delta(self, delta: str):
+        self.session.conversation.append_answer(self.question_id, delta)
         await self.session.send("answer_delta", question_id=self.question_id, delta=delta)
 
     async def _run(self):
         try:
             async with answer_slots:
                 first = True
-                async for delta in stream_answer(self.question, context.text):
+                async for delta in stream_answer(self.question, context.text, self._history):
                     if first:
                         first = False
                         log.info("answer first token %.0f ms after start", (time.perf_counter() - self._created) * 1000)

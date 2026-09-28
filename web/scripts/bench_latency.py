@@ -161,7 +161,7 @@ async def bench_answer(models: list[str], runs: int):
             print(f"    {q} -> {a}")
 
 
-async def bench_e2e(client: AsyncOpenAI, url: str):
+async def bench_e2e(client: AsyncOpenAI, url: str, gap: float):
     """Speech -> running app over its WebSocket, at real-time pace. Measures what the user sees."""
     import json
 
@@ -193,7 +193,7 @@ async def bench_e2e(client: AsyncOpenAI, url: str):
                 to_card.append(card_at - speech_end)
                 to_token.append(token_at - speech_end)
             print(f"  {text!r}: card {fmt(card_at, speech_end)}, first answer text {fmt(token_at, speech_end)}")
-            await drain(ws, 3)
+            await drain(ws, gap)  # real conversations pause between questions
         await ws.send(json.dumps({"type": "stop"}))
     print(f"median speech end -> card {median_ms(to_card)}, -> first answer text {median_ms(to_token)}")
 
@@ -217,6 +217,7 @@ async def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("stage", choices=["transcribe", "detector", "answer", "e2e"])
     parser.add_argument("--url", default="ws://localhost:8000/ws")
+    parser.add_argument("--gap", type=float, default=10, help="seconds between questions (e2e)")
     parser.add_argument("--models")
     parser.add_argument("--runs", type=int, default=3)
     args = parser.parse_args()
@@ -232,7 +233,7 @@ async def main():
     elif args.stage == "detector":
         await bench_detector(client, (args.models or "gpt-4o-mini,gpt-4.1-nano,gpt-5.4-nano").split(","), args.runs)
     elif args.stage == "e2e":
-        await bench_e2e(client, args.url)
+        await bench_e2e(client, args.url, args.gap)
     else:
         await bench_answer((args.models or "gpt-4o,gpt-4.1,gpt-5.4-mini").split(","), args.runs)
 
