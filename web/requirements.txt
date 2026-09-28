@@ -1,6 +1,6 @@
 fastapi
 uvicorn[standard]
-openai
+openai[realtime]
 openai-agents
 pypdf
 python-docx

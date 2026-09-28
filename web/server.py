@@ -1,5 +1,6 @@
 import asyncio
 import itertools
+import json
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
@@ -11,6 +12,7 @@ from pydantic import BaseModel
 from agent import stream_answer
 from context_store import ContextStore, UnsupportedFileError, extract_text
 from detector import classify
+from transcriber import RealtimeTranscriber
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -69,9 +71,41 @@ class Session:
         self._send_lock = asyncio.Lock()
         self._question_ids = itertools.count(1)
         self._tasks: set[asyncio.Task] = set()
+        self._transcriber: RealtimeTranscriber | None = None
         # Resolved when the previous utterance has been classified (and its card created, if any).
         self._utterance_tail: asyncio.Future = asyncio.get_running_loop().create_future()
         self._utterance_tail.set_result(None)
+
+    async def start_listening(self):
+        if self._transcriber is not None:
+            return
+        transcriber = RealtimeTranscriber(
+            on_partial=lambda _id, text: self.send("transcript_partial", text=text),
+            on_final=self._on_final_transcript,
+            on_error=lambda message: self.send("error", message=message),
+        )
+        try:
+            await transcriber.start()
+        except Exception as exc:
+            await self.send("error", message=f"Could not start transcription: {exc}")
+            await self.send("listening", active=False)
+            return
+        self._transcriber = transcriber
+        await self.send("listening", active=True)
+
+    async def stop_listening(self):
+        transcriber, self._transcriber = self._transcriber, None
+        if transcriber is not None:
+            await transcriber.close()
+        await self.send("listening", active=False)
+
+    async def send_audio(self, chunk: bytes):
+        if self._transcriber is not None:
+            await self._transcriber.send_audio(chunk)
+
+    async def _on_final_transcript(self, utterance_id: str, text: str):
+        await self.send("transcript_final", utterance_id=utterance_id, text=text)
+        self.submit_utterance(text)
 
     async def send(self, event_type: str, **payload):
         async with self._send_lock:
@@ -121,6 +155,9 @@ class Session:
             await self.send("error", question_id=question_id, message=str(exc))
 
     async def close(self):
+        transcriber, self._transcriber = self._transcriber, None
+        if transcriber is not None:
+            await transcriber.close()
         for task in list(self._tasks):
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
@@ -132,9 +169,22 @@ async def ws_endpoint(ws: WebSocket):
     session = Session(ws)
     try:
         while True:
-            msg = await ws.receive_json()
+            message = await ws.receive()
+            if message["type"] == "websocket.disconnect":
+                break
+            if message.get("bytes"):
+                await session.send_audio(message["bytes"])
+                continue
+            try:
+                msg = json.loads(message.get("text") or "{}")
+            except json.JSONDecodeError:
+                continue
             kind, text = msg.get("type"), msg.get("text", "").strip()
-            if kind == "ask" and text:
+            if kind == "start":
+                await session.start_listening()
+            elif kind == "stop":
+                await session.stop_listening()
+            elif kind == "ask" and text:
                 await session.ask(text)
             elif kind == "utterance" and text:
                 session.submit_utterance(text)

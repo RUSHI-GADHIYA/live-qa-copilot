@@ -3,12 +3,18 @@ const feed = $("feed");
 const cards = new Map(); // question_id -> card element
 
 let ws;
+let mic = null; // { stream, ctx, node } while capturing
 
 function connect() {
   ws = new WebSocket(`ws://${location.host}/ws`);
   ws.binaryType = "arraybuffer";
-  ws.onopen = () => setStatus("connected");
-  ws.onclose = () => { setStatus("disconnected, retrying…"); setTimeout(connect, 1500); };
+  ws.onopen = () => { setStatus("connected"); $("listenBtn").disabled = false; };
+  ws.onclose = () => {
+    stopMic();
+    $("listenBtn").disabled = true;
+    setStatus("disconnected, retrying…");
+    setTimeout(connect, 1500);
+  };
   ws.onmessage = (e) => handleEvent(JSON.parse(e.data));
 }
 
@@ -20,12 +26,70 @@ function setStatus(text) { $("status").textContent = text; }
 
 function handleEvent(ev) {
   switch (ev.type) {
+    case "transcript_partial": showTranscript(ev.text, true); break;
+    case "transcript_final": showTranscript(ev.text, false); break;
+    case "listening": if (!ev.active) stopMic(); setListeningUi(ev.active); break;
     case "question_detected": addCard(ev.question_id, ev.text); break;
     case "answer_delta": appendDelta(ev.question_id, ev.delta); break;
     case "answer_done": finishCard(ev.question_id); break;
     case "error": showError(ev); break;
   }
 }
+
+function showTranscript(text, partial, quoted = true) {
+  const el = $("transcript");
+  el.textContent = quoted ? `"${text}"` : text;
+  el.classList.toggle("muted", partial);
+}
+
+// ---- Microphone ----
+async function startMic() {
+  $("listenBtn").disabled = true;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+    });
+    // Ask for 24 kHz directly; the worklet resamples if the browser picks another rate.
+    const ctx = new AudioContext({ sampleRate: 24000 });
+    await ctx.audioWorklet.addModule("/static/pcm-worklet.js");
+    const node = new AudioWorkletNode(ctx, "pcm-worklet");
+    node.port.onmessage = (e) => { if (ws.readyState === WebSocket.OPEN) ws.send(e.data); };
+    ctx.createMediaStreamSource(stream).connect(node);
+    mic = { stream, ctx, node };
+    send({ type: "start" });
+    showTranscript("listening…", true, false);
+  } catch (err) {
+    stopMic();
+    setStatus(`mic error: ${err.message}`);
+    setListeningUi(false);
+  }
+}
+
+function stopMic() {
+  if (!mic) return;
+  mic.node.port.onmessage = null;
+  mic.stream.getTracks().forEach((t) => t.stop());
+  mic.ctx.close();
+  mic = null;
+}
+
+function setListeningUi(active) {
+  const btn = $("listenBtn");
+  btn.disabled = !ws || ws.readyState !== WebSocket.OPEN;
+  btn.classList.toggle("live", active);
+  btn.textContent = active ? "■ Stop listening" : "● Start listening";
+  if (!active) showTranscript("(not listening)", true, false);
+}
+
+$("listenBtn").addEventListener("click", () => {
+  if (mic) {
+    stopMic();
+    send({ type: "stop" });
+    setListeningUi(false);
+  } else {
+    startMic();
+  }
+});
 
 function addCard(id, question) {
   const card = document.createElement("div");
