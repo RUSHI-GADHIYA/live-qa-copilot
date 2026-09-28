@@ -98,7 +98,7 @@ h2 { margin: 0; font-size: 13px; text-transform: uppercase; letter-spacing: .06e
 .card.error { border-color: var(--danger); }
 .card.error .a { color: var(--danger); }
 
-.ask-form { display: flex; gap: 8px; }
+.ask-form { display: flex; gap: 8px; align-items: center; }
 .ask-form input {
   flex: 1;
   font: inherit;

@@ -68,7 +68,8 @@ $("askForm").addEventListener("submit", (e) => {
   e.preventDefault();
   const text = $("askInput").value.trim();
   if (!text) return;
-  send({ type: "ask", text });
+  // "utterance" goes through the question detector like speech does; "ask" skips it.
+  send({ type: $("detectToggle").checked ? "utterance" : "ask", text });
   $("askInput").value = "";
 });
 

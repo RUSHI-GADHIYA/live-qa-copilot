@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from agent import stream_answer
 from context_store import ContextStore, UnsupportedFileError, extract_text
+from detector import classify
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -68,16 +69,44 @@ class Session:
         self._send_lock = asyncio.Lock()
         self._question_ids = itertools.count(1)
         self._tasks: set[asyncio.Task] = set()
+        # Resolved when the previous utterance has been classified (and its card created, if any).
+        self._utterance_tail: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._utterance_tail.set_result(None)
 
     async def send(self, event_type: str, **payload):
         async with self._send_lock:
             await self.ws.send_json({"type": event_type, **payload})
 
+    def submit_utterance(self, text: str):
+        """Classify a finished utterance in the background and answer it if it is a question.
+
+        Classifications run in parallel, but cards are created in utterance order.
+        """
+        previous, self._utterance_tail = self._utterance_tail, asyncio.get_running_loop().create_future()
+        self.spawn(self._handle_utterance(text, previous, self._utterance_tail))
+
+    async def _handle_utterance(self, text: str, previous: asyncio.Future, done: asyncio.Future):
+        try:
+            try:
+                is_question, cleaned = await classify(text)
+            except Exception as exc:
+                is_question, cleaned = False, ""
+                await self.send("error", message=f"Question detector failed: {exc}")
+            await asyncio.shield(previous)
+            if is_question:
+                await self.ask(cleaned)
+        finally:
+            if not done.done():
+                done.set_result(None)
+
     async def ask(self, question: str):
         # The card is created before any answering starts, so feed order matches ask order.
         question_id = next(self._question_ids)
         await self.send("question_detected", question_id=question_id, text=question)
-        task = asyncio.create_task(self._answer(question_id, question))
+        self.spawn(self._answer(question_id, question))
+
+    def spawn(self, coro):
+        task = asyncio.create_task(coro)
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
@@ -104,8 +133,11 @@ async def ws_endpoint(ws: WebSocket):
     try:
         while True:
             msg = await ws.receive_json()
-            if msg.get("type") == "ask" and msg.get("text", "").strip():
-                await session.ask(msg["text"].strip())
+            kind, text = msg.get("type"), msg.get("text", "").strip()
+            if kind == "ask" and text:
+                await session.ask(text)
+            elif kind == "utterance" and text:
+                session.submit_utterance(text)
     except WebSocketDisconnect:
         pass
     finally:
