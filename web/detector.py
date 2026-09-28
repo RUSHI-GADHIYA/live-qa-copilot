@@ -1,7 +1,7 @@
-from openai import AsyncOpenAI
 from pydantic import BaseModel
 
 import config
+from openai_client import get_client, reasoning_settings
 
 MIN_WORDS = 3
 
@@ -19,26 +19,18 @@ class Classification(BaseModel):
     cleaned_question: str
 
 
-_client: AsyncOpenAI | None = None
-
-
-def _get_client() -> AsyncOpenAI:
-    global _client
-    if _client is None:
-        _client = AsyncOpenAI()
-    return _client
-
-
 async def classify(text: str) -> tuple[bool, str]:
     """Return (is_question, cleaned_question) for a finished utterance."""
     text = text.strip()
     if len(text.split()) < MIN_WORDS:
         return False, ""
-    response = await _get_client().responses.parse(
+    reasoning = reasoning_settings(config.DETECTOR_MODEL)
+    response = await get_client().responses.parse(
         model=config.DETECTOR_MODEL,
         instructions=INSTRUCTIONS,
         input=text,
         text_format=Classification,
+        **({"reasoning": reasoning} if reasoning else {}),
     )
     result = response.output_parsed
     if result is None or not result.is_question:

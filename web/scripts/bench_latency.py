@@ -3,6 +3,7 @@
     python scripts/bench_latency.py transcribe [--models gpt-4o-transcribe,gpt-live-transcribe]
     python scripts/bench_latency.py detector   [--models gpt-4o-mini,gpt-4.1-nano,gpt-5.4-nano]
     python scripts/bench_latency.py answer     [--models gpt-4o,gpt-4.1,gpt-5.4-mini]
+    python scripts/bench_latency.py e2e        [--url ws://localhost:8000/ws]   (needs the app running)
 
 Speech for the transcription stage is generated with TTS once and cached in scripts/.bench_cache/.
 """
@@ -160,9 +161,62 @@ async def bench_answer(models: list[str], runs: int):
             print(f"    {q} -> {a}")
 
 
+async def bench_e2e(client: AsyncOpenAI, url: str):
+    """Speech -> running app over its WebSocket, at real-time pace. Measures what the user sees."""
+    import json
+
+    import websockets
+
+    clips = [await tts(client, t) for t in SPEECH]
+    to_card, to_token = [], []
+    async with websockets.connect(url) as ws:
+        await ws.send(json.dumps({"type": "start"}))
+        assert json.loads(await ws.recv())["active"], "transcription did not start"
+        for text, clip in zip(SPEECH, clips):
+            for off in range(0, len(clip), CHUNK):
+                await ws.send(clip[off:off + CHUNK])
+                await asyncio.sleep(0.1)
+            speech_end = time.perf_counter()
+            card_at = token_at = None
+            deadline = speech_end + 10
+            while token_at is None and time.perf_counter() < deadline:
+                await ws.send(b"\0" * CHUNK)
+                try:
+                    event = json.loads(await asyncio.wait_for(ws.recv(), 0.1))
+                except asyncio.TimeoutError:
+                    continue
+                if event["type"] == "question_detected":
+                    card_at = time.perf_counter()
+                elif event["type"] == "answer_delta" and card_at:
+                    token_at = time.perf_counter()
+            if token_at:
+                to_card.append(card_at - speech_end)
+                to_token.append(token_at - speech_end)
+            print(f"  {text!r}: card {fmt(card_at, speech_end)}, first answer text {fmt(token_at, speech_end)}")
+            await drain(ws, 3)
+        await ws.send(json.dumps({"type": "stop"}))
+    print(f"median speech end -> card {median_ms(to_card)}, -> first answer text {median_ms(to_token)}")
+
+
+def fmt(at, since):
+    return f"{(at - since) * 1000:.0f} ms" if at else "none"
+
+
+async def drain(ws, seconds: float):
+    """Let the current answer finish while feeding silence, so questions don't overlap."""
+    end = time.perf_counter() + seconds
+    while time.perf_counter() < end:
+        await ws.send(b"\0" * CHUNK)
+        try:
+            await asyncio.wait_for(ws.recv(), 0.1)
+        except asyncio.TimeoutError:
+            pass
+
+
 async def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("stage", choices=["transcribe", "detector", "answer"])
+    parser.add_argument("stage", choices=["transcribe", "detector", "answer", "e2e"])
+    parser.add_argument("--url", default="ws://localhost:8000/ws")
     parser.add_argument("--models")
     parser.add_argument("--runs", type=int, default=3)
     args = parser.parse_args()
@@ -177,6 +231,8 @@ async def main():
         await bench_transcribe(client, models, vads)
     elif args.stage == "detector":
         await bench_detector(client, (args.models or "gpt-4o-mini,gpt-4.1-nano,gpt-5.4-nano").split(","), args.runs)
+    elif args.stage == "e2e":
+        await bench_e2e(client, args.url)
     else:
         await bench_answer((args.models or "gpt-4o,gpt-4.1,gpt-5.4-mini").split(","), args.runs)
 

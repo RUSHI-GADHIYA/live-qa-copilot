@@ -2,8 +2,10 @@ from collections.abc import AsyncIterator
 
 from agents import Agent, ModelSettings, Runner
 from openai.types.responses import ResponseTextDeltaEvent
+from openai.types.shared import Reasoning
 
 import config
+from openai_client import get_client, reasoning_settings
 
 BASE_INSTRUCTIONS = """You are a live assistant. You are given questions overheard from a conversation.
 Answer concisely in 1-3 sentences unless the question clearly needs more.
@@ -25,12 +27,18 @@ def build_instructions(context: str) -> str:
     return BASE_INSTRUCTIONS + "\n" + CONTEXT_INSTRUCTIONS.format(context=context)
 
 
+def default_model_settings() -> ModelSettings:
+    reasoning = reasoning_settings(config.ANSWER_MODEL)
+    return ModelSettings(reasoning=Reasoning(**reasoning)) if reasoning else ModelSettings()
+
+
 def build_agent(context: str, model_settings: ModelSettings | None = None) -> Agent:
+    get_client()  # registers the shared client with the Agents SDK
     return Agent(
         name="Live Q&A",
         instructions=build_instructions(context),
         model=config.ANSWER_MODEL,
-        model_settings=model_settings or ModelSettings(),
+        model_settings=model_settings or default_model_settings(),
     )
 
 

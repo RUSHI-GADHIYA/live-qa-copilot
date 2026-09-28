@@ -1,10 +1,13 @@
 import asyncio
 import base64
+import logging
+import time
 from collections.abc import Awaitable, Callable
 
-from openai import AsyncOpenAI
-
 import config
+from openai_client import get_client
+
+log = logging.getLogger("live_qa")
 
 PartialHandler = Callable[[str, str], Awaitable[None]]  # (utterance_id, text so far)
 FinalHandler = Callable[[str, str], Awaitable[None]]  # (utterance_id, final text)
@@ -53,9 +56,10 @@ class RealtimeTranscriber:
         self._connection = None
         self._reader: asyncio.Task | None = None
         self._partials: dict[str, str] = {}
+        self._speech_stopped_at: float | None = None
 
     async def start(self) -> None:
-        manager = AsyncOpenAI().realtime.connect(extra_query={"intent": "transcription"})
+        manager = get_client().realtime.connect(extra_query={"intent": "transcription"})
         self._connection = await manager.enter()
         await self._connection.session.update(session=self._session)
         self._reader = asyncio.create_task(self._read_events())
@@ -76,12 +80,17 @@ class RealtimeTranscriber:
     async def _read_events(self) -> None:
         try:
             async for event in self._connection:
-                if event.type == "conversation.item.input_audio_transcription.delta":
+                if event.type == "input_audio_buffer.speech_stopped":
+                    self._speech_stopped_at = time.perf_counter()
+                elif event.type == "conversation.item.input_audio_transcription.delta":
                     text = self._partials.get(event.item_id, "") + (event.delta or "")
                     self._partials[event.item_id] = text
                     await self._on_partial(event.item_id, text)
                 elif event.type == "conversation.item.input_audio_transcription.completed":
                     self._partials.pop(event.item_id, None)
+                    if self._speech_stopped_at is not None:
+                        log.info("transcript final %.0f ms after speech stopped",
+                                 (time.perf_counter() - self._speech_stopped_at) * 1000)
                     if event.transcript.strip():
                         await self._on_final(event.item_id, event.transcript.strip())
                 elif event.type == "conversation.item.input_audio_transcription.failed":

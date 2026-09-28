@@ -1,6 +1,8 @@
 import asyncio
 import itertools
 import json
+import logging
+import time
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
@@ -16,6 +18,8 @@ from detector import classify
 from transcriber import RealtimeTranscriber
 
 STATIC_DIR = Path(__file__).parent / "static"
+log = logging.getLogger("live_qa")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 
 app = FastAPI(title="Live Q&A Agent")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -119,7 +123,7 @@ class Session:
 
 
     def submit_utterance(self, text: str):
-        """Classify a finished utterance in the background and answer it if it is a question.
+        """Handle a finished utterance in the background; answer it if it is a question.
 
         Classifications run in parallel, but cards are created in utterance order.
         """
@@ -127,40 +131,39 @@ class Session:
         self.spawn(self._handle_utterance(text, previous, self._utterance_tail))
 
     async def _handle_utterance(self, text: str, previous: asyncio.Future, done: asyncio.Future):
+        # Speculatively start the answer so it overlaps the detector call; it stays hidden until confirmed.
+        answer = AnswerStream(self, text) if config.SPECULATIVE_ANSWERS else None
+        started = time.perf_counter()
         try:
             try:
                 is_question, cleaned = await classify(text)
+                log.info("detector %.0f ms: %s %r", (time.perf_counter() - started) * 1000,
+                         "question" if is_question else "skip", text)
             except Exception as exc:
                 is_question, cleaned = False, ""
                 await self.send("error", message=f"Question detector failed: {exc}")
             await asyncio.shield(previous)
             if is_question:
-                await self.ask(cleaned)
+                await self.ask(cleaned, answer)
+                answer = None
         finally:
+            if answer is not None:
+                answer.cancel()
             if not done.done():
                 done.set_result(None)
 
-    async def ask(self, question: str):
-        # The card is created before any answering starts, so feed order matches ask order.
+    async def ask(self, question: str, answer: "AnswerStream | None" = None):
+        # The card is created before any answer text is shown, so feed order matches ask order.
         question_id = next(self._question_ids)
         await self.send("question_detected", question_id=question_id, text=question)
-        self.spawn(self._answer(question_id, question))
+        answer = answer or AnswerStream(self, question)
+        await answer.attach(question_id)
 
-    def spawn(self, coro):
+    def spawn(self, coro) -> asyncio.Task:
         task = asyncio.create_task(coro)
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
-
-    async def _answer(self, question_id: int, question: str):
-        try:
-            async with answer_slots:
-                async for delta in stream_answer(question, context.text):
-                    await self.send("answer_delta", question_id=question_id, delta=delta)
-            await self.send("answer_done", question_id=question_id)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            await self.send("error", question_id=question_id, message=str(exc))
+        return task
 
     async def close(self):
         transcriber, self._transcriber = self._transcriber, None
@@ -169,6 +172,55 @@ class Session:
         for task in list(self._tasks):
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
+
+
+class AnswerStream:
+    """One answer generation. Text is buffered until attach() binds it to a card, then streamed live."""
+
+    def __init__(self, session: Session, question: str):
+        self.session = session
+        self.question = question
+        self.question_id: int | None = None
+        self._buffer: list[str] = []
+        self._lock = asyncio.Lock()  # keeps the buffered flush ahead of live deltas
+        self._attached = asyncio.Event()
+        self._created = time.perf_counter()
+        self._task = session.spawn(self._run())
+
+    async def attach(self, question_id: int):
+        async with self._lock:
+            self.question_id = question_id
+            if self._buffer:
+                await self._send_delta("".join(self._buffer))
+                self._buffer.clear()
+        self._attached.set()
+
+    def cancel(self):
+        self._task.cancel()
+
+    async def _send_delta(self, delta: str):
+        await self.session.send("answer_delta", question_id=self.question_id, delta=delta)
+
+    async def _run(self):
+        try:
+            async with answer_slots:
+                first = True
+                async for delta in stream_answer(self.question, context.text):
+                    if first:
+                        first = False
+                        log.info("answer first token %.0f ms after start", (time.perf_counter() - self._created) * 1000)
+                    async with self._lock:
+                        if self.question_id is None:
+                            self._buffer.append(delta)
+                        else:
+                            await self._send_delta(delta)
+            await self._attached.wait()
+            await self.session.send("answer_done", question_id=self.question_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            await self._attached.wait()  # errors only matter once there is a card to show them on
+            await self.session.send("error", question_id=self.question_id, message=str(exc))
 
 
 @app.websocket("/ws")
