@@ -20,6 +20,7 @@ class Exchange:
 
 
 def _words(text: str) -> list[str]:
+    text = re.sub(r"\[\d+\]", " ", text)  # citation markers are shown on screen, never said aloud
     return re.findall(r"[a-z0-9']+", text.lower())
 
 

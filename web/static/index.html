@@ -29,13 +29,15 @@
 <main class="layout">
   <aside class="context-panel">
     <h2>Context</h2>
-    <textarea id="contextText" placeholder="Paste reference text the agent should use…"></textarea>
-    <div class="row">
-      <label class="file-btn">Upload file<input id="contextFile" type="file" accept=".txt,.md,.pdf,.docx" hidden></label>
-      <button id="saveContextBtn">Save</button>
-      <button id="clearContextBtn">Clear</button>
-    </div>
+    <ul id="docList" class="doc-list"></ul>
     <div id="contextInfo" class="muted small">No context loaded.</div>
+    <label class="file-btn">Upload files<input id="contextFile" type="file" accept=".txt,.md,.pdf,.docx" multiple hidden></label>
+    <input id="contextName" type="text" placeholder="Name for pasted text (optional)" autocomplete="off">
+    <textarea id="contextText" placeholder="Paste reference text: notes, a job description, a policy…"></textarea>
+    <div class="row">
+      <button id="addTextBtn">Add text</button>
+      <button id="clearContextBtn">Clear all</button>
+    </div>
     <div id="contextWarn" class="warn small" hidden></div>
   </aside>
 

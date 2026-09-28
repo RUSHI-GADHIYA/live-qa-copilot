@@ -37,7 +37,7 @@ def answer_text(events):
 
 
 def test_answers_stream_into_their_own_cards(client, monkeypatch):
-    async def fake_stream(q, context="", history=None):
+    async def fake_stream(q, passages=None, history=None):
         for word in ["ans", "-", q]:
             await asyncio.sleep(0.3 if "slow" in q else 0.01)
             yield word
@@ -58,7 +58,7 @@ def test_cards_follow_utterance_order_and_skip_non_questions(client, monkeypatch
         await asyncio.sleep(0.3 if "first" in text else 0.01)
         return "question" if "?" in text else "other"
 
-    async def fake_stream(q, context="", history=None):
+    async def fake_stream(q, passages=None, history=None):
         yield "a:" + q
 
     monkeypatch.setattr(server, "classify", fake_classify)
@@ -80,7 +80,7 @@ def test_speculative_answer_is_hidden_until_confirmed(client, monkeypatch, specu
         await asyncio.sleep(0.2)  # the answer streams fully before the detector decides
         return "question" if "?" in text else "other"
 
-    async def fake_stream(q, context="", history=None):
+    async def fake_stream(q, passages=None, history=None):
         started.append(q)
         for word in ["one ", "two ", "three"]:
             yield word
@@ -105,7 +105,7 @@ def test_rejected_speculation_is_cancelled(client, monkeypatch):
         await asyncio.sleep(0.05)
         return "other"
 
-    async def fake_stream(q, context="", history=None):
+    async def fake_stream(q, passages=None, history=None):
         try:
             while True:
                 await asyncio.sleep(0.01)
@@ -130,7 +130,7 @@ def test_rejected_speculation_is_cancelled(client, monkeypatch):
 def test_concurrency_cap_and_order(client, monkeypatch):
     active = peak = 0
 
-    async def fake_stream(q, context="", history=None):
+    async def fake_stream(q, passages=None, history=None):
         nonlocal active, peak
         active += 1
         peak = max(peak, active)
@@ -176,7 +176,7 @@ def test_transcripts_flow_into_cards_and_stop(client, monkeypatch):
     async def fake_classify(text, history=None):
         return "question"
 
-    async def fake_stream(q, context="", history=None):
+    async def fake_stream(q, passages=None, history=None):
         yield "45 days"
 
     monkeypatch.setattr(server, "RealtimeTranscriber", FakeTranscriber)
@@ -192,7 +192,7 @@ def test_transcripts_flow_into_cards_and_stop(client, monkeypatch):
         events.append(ws.receive_json())
     assert [e["type"] for e in events] == [
         "transcript_partial", "transcript_partial", "transcript_final",
-        "question_detected", "answer_delta", "answer_done", "listening",
+        "question_detected", "answer_sources", "answer_delta", "answer_done", "listening",
     ]
     assert FakeTranscriber.last.closed
 
@@ -220,7 +220,7 @@ def test_listener_reading_the_answer_is_ignored_without_a_detector_call(client, 
         classified.append(text)
         return "repeat" if "again" in text else "question"
 
-    async def fake_stream(q, context="", history=None):
+    async def fake_stream(q, passages=None, history=None):
         histories.append(history)
         yield "The refund window is 45 days from delivery, "
         yield "and refunds go to the original payment method."

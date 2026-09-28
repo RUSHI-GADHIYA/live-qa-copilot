@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 import config
 from agent import stream_answer
-from context_store import ContextStore, UnsupportedFileError, extract_text
+from context_store import ContextFullError, ContextStore, UnsupportedFileError, extract_text
 from detector import classify
 from openai_client import warm_connections
 from transcriber import RealtimeTranscriber
@@ -38,16 +38,28 @@ async def index():
 
 class ContextText(BaseModel):
     text: str
+    name: str = "pasted text"
 
 
-@app.post("/context/text")
-async def set_context_text(body: ContextText):
-    context.set(body.text, "pasted text")
+async def add_document(text: str, name: str) -> dict:
+    try:
+        await context.add(text, name)
+    except ContextFullError as exc:
+        raise HTTPException(status_code=413, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:  # embedding call failed
+        raise HTTPException(status_code=502, detail=f"Could not index {name}: {exc}")
     return context.summary()
 
 
+@app.post("/context/text")
+async def add_context_text(body: ContextText):
+    return await add_document(body.text, body.name.strip() or "pasted text")
+
+
 @app.post("/context/file")
-async def set_context_file(file: UploadFile):
+async def add_context_file(file: UploadFile):
     data = await file.read()
     try:
         text = await run_in_threadpool(extract_text, file.filename or "", data)
@@ -55,14 +67,18 @@ async def set_context_file(file: UploadFile):
         raise HTTPException(status_code=415, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Could not read {file.filename}: {exc}")
-    if not text.strip():
-        raise HTTPException(status_code=400, detail=f"No text found in {file.filename}")
-    context.set(text, file.filename or "uploaded file")
-    return context.summary()
+    return await add_document(text, file.filename or "uploaded file")
 
 
 @app.get("/context")
 async def get_context():
+    return context.summary()
+
+
+@app.delete("/context/{doc_id}")
+async def remove_context_document(doc_id: str):
+    if not context.remove(doc_id):
+        raise HTTPException(status_code=404, detail="No such document")
     return context.summary()
 
 
@@ -95,6 +111,7 @@ class Session:
             on_final=self._on_final_transcript,
             on_error=lambda message: self.send("error", message=message),
             source=source,
+            transcription_extra=transcription_keywords(),
         )
         try:
             await transcriber.start()
@@ -200,8 +217,19 @@ class Session:
         await asyncio.gather(*self._tasks, return_exceptions=True)
 
 
+def transcription_keywords() -> dict | None:
+    """Names and terms from the context, so the transcriber spells them the way the documents do."""
+    if config.TRANSCRIBE_MODEL not in KEYWORD_MODELS:
+        return None
+    keywords = context.keywords()
+    return {"keywords": keywords} if keywords else None
+
+
+KEYWORD_MODELS = {"gpt-transcribe", "gpt-live-transcribe"}
+
+
 class AnswerStream:
-    """One answer generation. Text is buffered until attach() binds it to a card, then streamed live."""
+    """One answer generation. Its events are held back until attach() binds it to a card, then sent live."""
 
     def __init__(self, session: Session, question: str):
         self.session = session
@@ -209,8 +237,8 @@ class AnswerStream:
         self.question_id: int | None = None
         # Earlier exchanges, captured now: a speculative answer starts before its own question is recorded.
         self._history = session.conversation.answer_history(before_question_id=float("inf"))
-        self._buffer: list[str] = []
-        self._lock = asyncio.Lock()  # keeps the buffered flush ahead of live deltas
+        self._pending: list[tuple[str, dict]] = []
+        self._lock = asyncio.Lock()  # keeps held-back events ahead of live ones
         self._attached = asyncio.Event()
         self._created = time.perf_counter()
         self._task = session.spawn(self._run())
@@ -218,31 +246,44 @@ class AnswerStream:
     async def attach(self, question_id: int):
         async with self._lock:
             self.question_id = question_id
-            if self._buffer:
-                await self._send_delta("".join(self._buffer))
-                self._buffer.clear()
+            for event_type, payload in merge_deltas(self._pending):
+                await self._send(event_type, payload)
+            self._pending.clear()
         self._attached.set()
 
     def cancel(self):
         self._task.cancel()
 
-    async def _send_delta(self, delta: str):
-        self.session.conversation.append_answer(self.question_id, delta)
-        await self.session.send("answer_delta", question_id=self.question_id, delta=delta)
+    async def _emit(self, event_type: str, **payload):
+        async with self._lock:
+            if self.question_id is None:
+                self._pending.append((event_type, payload))
+            else:
+                await self._send(event_type, payload)
+
+    async def _send(self, event_type: str, payload: dict):
+        if event_type == "answer_delta":
+            self.session.conversation.append_answer(self.question_id, payload["delta"])
+        await self.session.send(event_type, question_id=self.question_id, **payload)
+
+    def _retrieval_query(self) -> str:
+        # Follow-ups like "is that the same for exchanges?" only make sense next to the previous question.
+        previous = [m["content"] for m in self._history if m["role"] == "user"][-1:]
+        return "\n".join([*previous, self.question])
 
     async def _run(self):
         try:
             async with answer_slots:
+                passages = await context.passages(self._retrieval_query())
+                await self._emit("answer_sources", sources=[
+                    {"n": p.n, "doc": p.doc_name, "snippet": p.text[:240]} for p in passages
+                ])
                 first = True
-                async for delta in stream_answer(self.question, context.text, self._history):
+                async for delta in stream_answer(self.question, passages, self._history):
                     if first:
                         first = False
                         log.info("answer first token %.0f ms after start", (time.perf_counter() - self._created) * 1000)
-                    async with self._lock:
-                        if self.question_id is None:
-                            self._buffer.append(delta)
-                        else:
-                            await self._send_delta(delta)
+                    await self._emit("answer_delta", delta=delta)
             await self._attached.wait()
             await self.session.send("answer_done", question_id=self.question_id)
         except asyncio.CancelledError:
@@ -250,6 +291,17 @@ class AnswerStream:
         except Exception as exc:
             await self._attached.wait()  # errors only matter once there is a card to show them on
             await self.session.send("error", question_id=self.question_id, message=str(exc))
+
+
+def merge_deltas(events: list[tuple[str, dict]]) -> list[tuple[str, dict]]:
+    """Send held-back text as one delta instead of dozens."""
+    merged: list[tuple[str, dict]] = []
+    for event_type, payload in events:
+        if event_type == "answer_delta" and merged and merged[-1][0] == "answer_delta":
+            merged[-1] = ("answer_delta", {"delta": merged[-1][1]["delta"] + payload["delta"]})
+        else:
+            merged.append((event_type, payload))
+    return merged
 
 
 @app.websocket("/ws")

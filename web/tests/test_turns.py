@@ -62,3 +62,10 @@ def test_old_exchanges_are_evicted():
         c.append_answer(i, f"a{i}")
     c.append_answer(1, "late delta for an evicted question")  # must not raise
     assert [m["content"] for m in c.answer_history(before_question_id=99)] == ["q2", "a2", "q3", "a3"]
+
+
+def test_citation_markers_do_not_block_readback():
+    c = Conversation()
+    c.add_question(1, "q")
+    c.append_answer(1, "I led the X7 integration team for four years [1] at Acme Robotics [2].")
+    assert c.readback_score("I led the X7 integration team for four years at Acme Robotics") == 1.0

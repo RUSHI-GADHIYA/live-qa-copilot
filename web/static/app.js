@@ -31,6 +31,7 @@ function handleEvent(ev) {
     case "utterance_ignored": showIgnored(ev); break;
     case "listening": if (!ev.active) stopMic(); setListeningUi(ev.active); break;
     case "question_detected": addCard(ev.question_id, ev.text); break;
+    case "answer_sources": setSources(ev.question_id, ev.sources); break;
     case "answer_delta": appendDelta(ev.question_id, ev.delta); break;
     case "answer_done": finishCard(ev.question_id); break;
     case "error": showError(ev); break;
@@ -149,11 +150,18 @@ $("listenBtn").addEventListener("click", () => {
 function addCard(id, question) {
   const card = document.createElement("div");
   card.className = "card thinking";
-  card.innerHTML = `<div class="q"></div><div class="a"></div>`;
+  card.innerHTML = `<div class="q"></div><div class="a"></div><div class="sources"></div>`;
   card.querySelector(".q").textContent = `Q${id}: ${question}`;
+  card.answer = ""; // raw answer text, including [n] citation markers
+  card.sources = []; // passages the answer could cite: { n, doc, snippet }
   cards.set(id, card);
   feed.appendChild(card);
   scrollFeed();
+}
+
+function setSources(id, sources) {
+  const card = cards.get(id);
+  if (card) card.sources = sources;
 }
 
 function appendDelta(id, delta) {
@@ -161,13 +169,56 @@ function appendDelta(id, delta) {
   if (!card) return;
   card.classList.remove("thinking");
   card.classList.add("streaming");
-  card.querySelector(".a").textContent += delta;
+  card.answer += delta;
+  renderAnswer(card);
   scrollFeed();
+}
+
+// Answer text with [n] markers shown as small citation chips. Built from text nodes: model output is never HTML.
+function renderAnswer(card) {
+  const a = card.querySelector(".a");
+  a.replaceChildren();
+  const parts = card.answer.split(/\[(\d+)\]/);
+  parts.forEach((part, i) => {
+    if (i % 2 === 0) {
+      if (part) a.append(part);
+      return;
+    }
+    const source = card.sources.find((s) => s.n === Number(part));
+    const cite = document.createElement("sup");
+    cite.className = "cite";
+    cite.textContent = part;
+    if (source) cite.title = `${source.doc}: ${source.snippet}`;
+    a.append(cite);
+  });
 }
 
 function finishCard(id) {
   const card = cards.get(id);
-  if (card) card.classList.remove("thinking", "streaming");
+  if (!card) return;
+  card.classList.remove("thinking", "streaming");
+  const cited = new Set([...card.answer.matchAll(/\[(\d+)\]/g)].map((m) => Number(m[1])));
+  const used = card.sources.filter((s) => cited.has(s.n));
+  const row = card.querySelector(".sources");
+  row.replaceChildren();
+  if (used.length) {
+    const docs = [...new Set(used.map((s) => s.doc))];
+    for (const doc of docs) {
+      const chip = document.createElement("span");
+      chip.className = "chip";
+      chip.textContent = doc;
+      chip.title = used.filter((s) => s.doc === doc).map((s) => `[${s.n}] ${s.snippet}`).join("\n\n");
+      row.append(chip);
+    }
+  } else if (card.sources.length) {
+    // Context was available but did not cover this question.
+    const missing = card.answer.trimStart().startsWith("Not in your notes");
+    const badge = document.createElement("span");
+    badge.className = missing ? "chip missing" : "chip general";
+    badge.textContent = missing ? "Not in your notes" : "General knowledge";
+    badge.title = missing ? "Nothing in your documents covers this; add it to the context" : "Your context did not cover this question";
+    row.append(badge);
+  }
 }
 
 function showError(ev) {
@@ -206,14 +257,31 @@ async function contextRequest(method, path, body) {
 }
 
 function renderContext(info) {
-  $("contextInfo").textContent = info.length
-    ? `${info.length.toLocaleString()} chars from ${info.source}`
-    : "No context loaded.";
-  const warn = $("contextWarn");
-  warn.hidden = !info.truncated;
-  warn.textContent = info.truncated
-    ? `Context was ${info.original_length.toLocaleString()} chars; truncated to ${info.max_length.toLocaleString()}.`
-    : "";
+  const list = $("docList");
+  list.replaceChildren();
+  for (const doc of info.documents) {
+    const item = document.createElement("li");
+    const name = document.createElement("span");
+    name.className = "doc-name";
+    name.textContent = doc.name;
+    name.title = doc.preview;
+    const size = document.createElement("span");
+    size.className = "muted small";
+    size.textContent = `${doc.chars.toLocaleString()} chars`;
+    const remove = document.createElement("button");
+    remove.className = "icon-btn";
+    remove.textContent = "×";
+    remove.title = `Remove ${doc.name}`;
+    remove.addEventListener("click", () => withContext(() => contextRequest("DELETE", `/context/${doc.id}`)));
+    item.append(name, size, remove);
+    list.append(item);
+  }
+  $("contextInfo").textContent = !info.documents.length
+    ? "No context loaded."
+    : info.mode === "full"
+      ? `${info.total_chars.toLocaleString()} chars, all sent with each question`
+      : `${info.total_chars.toLocaleString()} chars, ${info.chunks} chunks; the most relevant are sent with each question`;
+  $("contextWarn").hidden = true;
 }
 
 async function withContext(action) {
@@ -221,23 +289,28 @@ async function withContext(action) {
   catch (err) { $("contextWarn").hidden = false; $("contextWarn").textContent = err.message; }
 }
 
-$("saveContextBtn").addEventListener("click", () =>
-  withContext(() => contextRequest("POST", "/context/text", JSON.stringify({ text: $("contextText").value }))));
-
-$("clearContextBtn").addEventListener("click", () =>
-  withContext(async () => { $("contextText").value = ""; return contextRequest("DELETE", "/context"); }));
-
-$("contextFile").addEventListener("change", (e) => {
-  const file = e.target.files[0];
-  if (!file) return;
-  const form = new FormData();
-  form.append("file", file);
+$("addTextBtn").addEventListener("click", () => {
+  const text = $("contextText").value;
+  if (!text.trim()) return;
   withContext(async () => {
-    const info = await contextRequest("POST", "/context/file", form);
-    $("contextText").value = info.preview + (info.length > info.preview.length ? "\n…" : "");
+    const info = await contextRequest("POST", "/context/text", JSON.stringify({ text, name: $("contextName").value }));
+    $("contextText").value = "";
+    $("contextName").value = "";
     return info;
   });
+});
+
+$("clearContextBtn").addEventListener("click", () => withContext(() => contextRequest("DELETE", "/context")));
+
+$("contextFile").addEventListener("change", async (e) => {
+  const files = [...e.target.files];
   e.target.value = "";
+  for (const file of files) {
+    $("contextInfo").textContent = `Indexing ${file.name}…`;
+    const form = new FormData();
+    form.append("file", file);
+    await withContext(() => contextRequest("POST", "/context/file", form));
+  }
 });
 
 withContext(() => contextRequest("GET", "/context"));
