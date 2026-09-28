@@ -6,3 +6,4 @@ pypdf
 python-docx
 python-multipart
 python-dotenv
+brotli>=1.2.0

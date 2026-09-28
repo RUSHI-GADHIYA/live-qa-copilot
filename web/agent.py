@@ -5,22 +5,28 @@ from openai.types.responses import ResponseTextDeltaEvent
 
 import config
 
-INSTRUCTIONS = """You are a live assistant. You are given questions overheard from a conversation.
+BASE_INSTRUCTIONS = """You are a live assistant. You are given questions overheard from a conversation.
 Answer concisely in 1-3 sentences unless the question clearly needs more.
-If CONTEXT is provided below, prioritize it. If the answer is not in the context,
-answer from general knowledge and say the context did not cover it.
-Never mention that you are transcribing audio.
+Never mention that you are transcribing audio."""
+
+CONTEXT_INSTRUCTIONS = """
+The user has provided the CONTEXT below. If it is relevant to the question, base your answer on it.
+If the context does not contain the answer, answer from general knowledge and start your answer with
+"The provided context doesn't cover this, but" followed by the answer.
 
 CONTEXT:
 {context}"""
 
 
+def build_instructions(context: str) -> str:
+    context = context.strip()
+    if not context:
+        return BASE_INSTRUCTIONS
+    return BASE_INSTRUCTIONS + "\n" + CONTEXT_INSTRUCTIONS.format(context=context)
+
+
 def build_agent(context: str) -> Agent:
-    return Agent(
-        name="Live Q&A",
-        instructions=INSTRUCTIONS.format(context=context.strip() or "(none provided)"),
-        model=config.ANSWER_MODEL,
-    )
+    return Agent(name="Live Q&A", instructions=build_instructions(context), model=config.ANSWER_MODEL)
 
 
 async def stream_answer(question: str, context: str = "") -> AsyncIterator[str]:

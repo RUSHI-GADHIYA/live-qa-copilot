@@ -98,9 +98,9 @@ class Session:
 
     async def stop_listening(self):
         transcriber, self._transcriber = self._transcriber, None
-        if transcriber is not None:
-            await transcriber.close()
         await self.send("listening", active=False)
+        if transcriber is not None:
+            await transcriber.close()  # the close handshake can take a couple of seconds
 
     async def send_audio(self, chunk: bytes):
         if self._transcriber is not None:
