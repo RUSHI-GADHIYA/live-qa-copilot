@@ -1,6 +1,6 @@
 # Live Copilot (Android)
 
-The phone version of [web app](../web). Put the phone near a conversation. It detects the questions the other person asks and streams answers grounded in your documents. When you say an answer aloud, it recognises that and waits for the next real question.
+The phone version of the [web app](../web). Put the phone near a conversation. It detects the questions the other person asks and streams answers grounded in your documents. When you say an answer aloud, it recognises that and waits for the next real question.
 
 It runs **standalone**: the phone calls OpenAI directly, and no laptop or server is involved. Your OpenAI key is typed into the app once and kept in Android's secure storage. It is never part of the app file.
 
